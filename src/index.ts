@@ -7,12 +7,16 @@
 import 'dotenv/config';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   ErrorCode,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import express, { Request, Response, NextFunction } from 'express';
+import geoip from 'geoip-lite';
+import rateLimit from 'express-rate-limit';
 
 import { TOOL_DEFINITIONS } from './schemas.js';
 import * as client from './services/client.js';
@@ -780,20 +784,209 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Start server
-async function main() {
-  // Validate required environment variables
+// ============================================================================
+// Transport Handlers
+// ============================================================================
+
+function validateEnv(): void {
   if (!process.env.META_ADS_ACCESS_TOKEN) {
     console.error('Error: META_ADS_ACCESS_TOKEN environment variable is required');
     process.exit(1);
   }
+}
 
+async function runStdio(): Promise<void> {
+  validateEnv();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Meta Ads MCP server running on stdio');
 }
 
-main().catch((error) => {
-  console.error('Server error:', error);
-  process.exit(1);
-});
+// Structured logging for Cloud Logging
+interface LogEntry {
+  severity: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+  message: string;
+  timestamp?: string;
+  duration?: number;
+  error?: string;
+}
+
+function log(entry: LogEntry): void {
+  console.log(JSON.stringify({
+    ...entry,
+    timestamp: entry.timestamp || new Date().toISOString(),
+  }));
+}
+
+async function runHTTP(): Promise<void> {
+  validateEnv();
+
+  const app = express();
+  app.use(express.json({ limit: '1mb', strict: true }));
+
+  // CORS configuration
+  app.use((_req: Request, res: Response, next: NextFunction): void => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id, Last-Event-ID, X-API-Key');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    if (_req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
+  // ヘルパー: Cloud Run環境対応のクライアントIP取得
+  function getClientIp(req: Request): string {
+    const forwardedFor = req.headers['x-forwarded-for'] as string || '';
+    const ips = forwardedFor.split(',').map(ip => ip.trim());
+    return ips.length >= 2 ? ips[ips.length - 1] : (ips[0] || req.ip || 'unknown');
+  }
+
+  // --- 4層防御セキュリティミドルウェア ---
+  const apiToken = process.env.MCP_API_TOKEN;
+  if (!apiToken) {
+    log({ severity: 'WARNING', message: 'MCP_API_TOKEN not set - all requests will be rejected' });
+  }
+
+  // Layer 3: レート制限（APIキー単位で毎分60リクエスト）
+  const rateLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    keyGenerator: (req: Request) => getClientIp(req),
+    message: { error: 'Rate limit exceeded. Max 60 requests per minute.' }
+  });
+
+  // Layer 1: APIキー認証
+  function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+    if (req.path === '/health') { next(); return; }
+    const key = req.headers['x-api-key'] as string || req.headers['authorization']?.replace('Bearer ', '');
+    const clientIp = getClientIp(req);
+    if (!key) {
+      console.warn(JSON.stringify({ severity: 'WARNING', type: 'MCP_AUTH_FAIL', reason: 'no_key', ip: clientIp, timestamp: new Date().toISOString() }));
+      res.status(401).json({ error: 'API key required' });
+      return;
+    }
+    if (!apiToken || key !== apiToken) {
+      console.warn(JSON.stringify({ severity: 'WARNING', type: 'MCP_AUTH_FAIL', reason: 'invalid_key', ip: clientIp, apiKeyPrefix: key.substring(0, 8) + '...', timestamp: new Date().toISOString() }));
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  }
+
+  // Layer 2: 地域制限（日本のみ）
+  function geoMiddleware(req: Request, res: Response, next: NextFunction): void {
+    if (req.path === '/health') { next(); return; }
+    const clientIp = getClientIp(req);
+    const geo = geoip.lookup(clientIp || '');
+    if (!geo || geo.country !== 'JP') {
+      console.warn(JSON.stringify({ severity: 'WARNING', type: 'MCP_GEO_BLOCK', ip: clientIp, country: geo?.country || 'unknown', timestamp: new Date().toISOString() }));
+      res.status(403).json({ error: 'Access denied: region restricted' });
+      return;
+    }
+    (req as any)._geo = geo;
+    next();
+  }
+
+  // Layer 4: 監査ログ
+  function auditLogMiddleware(req: Request, _res: Response, next: NextFunction): void {
+    if (req.path === '/health') { next(); return; }
+    const clientIp = getClientIp(req);
+    const geo = (req as any)._geo;
+    const key = req.headers['x-api-key'] as string || req.headers['authorization']?.replace('Bearer ', '') || '';
+    console.log(JSON.stringify({
+      severity: 'INFO',
+      type: 'MCP_ACCESS',
+      timestamp: new Date().toISOString(),
+      ip: clientIp,
+      country: geo?.country || 'unknown',
+      apiKeyPrefix: key ? key.substring(0, 8) + '...' : 'none',
+      path: req.path,
+      method: req.method,
+      rpcMethod: req.body?.method || 'unknown'
+    }));
+    next();
+  }
+
+  // ミドルウェア適用: レート制限 → APIキー認証 → 地域制限 → 監査ログ → ハンドラ
+  app.use(rateLimiter);
+  app.use(authMiddleware);
+  app.use(geoMiddleware);
+  app.use(auditLogMiddleware);
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await server.connect(transport);
+
+  app.get('/health', (_req: Request, res: Response) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
+  app.post('/mcp', async (req: Request, res: Response): Promise<void> => {
+    const startTime = Date.now();
+    log({ severity: 'INFO', message: `POST /mcp - body: ${JSON.stringify(req.body).substring(0, 200)}` });
+    try {
+      await transport.handleRequest(req, res, req.body);
+      log({ severity: 'INFO', message: 'Request completed', duration: Date.now() - startTime });
+    } catch (error) {
+      log({
+        severity: 'ERROR',
+        message: 'Request failed',
+        error: error instanceof Error ? error.message : String(error),
+        duration: Date.now() - startTime,
+      });
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal server error' },
+          id: null,
+        });
+      }
+    }
+  });
+
+  app.get('/mcp', (_req: Request, res: Response): void => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32601, message: 'SSE streams not supported in stateless mode' },
+      id: null,
+    });
+  });
+
+  app.delete('/mcp', (_req: Request, res: Response): void => {
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32601, message: 'Session termination not supported in stateless mode' },
+      id: null,
+    });
+  });
+
+  const port = parseInt(process.env.PORT || '8080');
+  app.listen(port, () => {
+    log({ severity: 'INFO', message: `Meta Ads MCP server running on port ${port}` });
+  });
+}
+
+// ============================================================================
+// Main Execution
+// ============================================================================
+
+const cliArgs = process.argv.slice(2);
+const useHttp = cliArgs.includes('--http') || process.env.TRANSPORT === 'http';
+
+if (useHttp) {
+  runHTTP().catch((error) => {
+    log({ severity: 'ERROR', message: 'Server error', error: error instanceof Error ? error.message : String(error) });
+    process.exit(1);
+  });
+} else {
+  runStdio().catch((error) => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  });
+}
