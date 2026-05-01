@@ -138,6 +138,21 @@ async function apiRequest<T>(
       const errorResponse = data as MetaApiErrorResponse;
       const error = errorResponse.error;
 
+      // Diagnostic logging: structured Meta API error details
+      // (does NOT include access_token / request body / response body to keep secrets out of logs)
+      console.error('[META_API_ERROR]', JSON.stringify({
+        method,
+        endpoint: cleanEndpoint,
+        http_status: response.status,
+        error_code: error.code,
+        error_message: error.message,
+        error_subcode: (error as { error_subcode?: number }).error_subcode,
+        error_user_title: (error as { error_user_title?: string }).error_user_title,
+        error_user_msg: (error as { error_user_msg?: string }).error_user_msg,
+        error_type: error.type,
+        fbtrace_id: error.fbtrace_id,
+      }));
+
       // Check if we should retry
       if (RETRY_ERROR_CODES.includes(error.code) && retryCount < 3) {
         const waitTime = error.code === 17 || error.code === 4
