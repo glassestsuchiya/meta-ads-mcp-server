@@ -888,6 +888,21 @@ export async function listCustomAudiences(
   return apiRequest(url);
 }
 
+export async function createCustomAudience(
+  accountId: string,
+  params: {
+    name: string;
+    subtype: string;
+    retention_days?: number;
+    rule?: Record<string, unknown>;
+    exclusion_rule?: Record<string, unknown>;
+    description?: string;
+  }
+): Promise<{ id: string }> {
+  const normalizedId = normalizeAccountId(accountId);
+  return apiRequest<{ id: string }>(`/${normalizedId}/customaudiences`, 'POST', params as Record<string, unknown>);
+}
+
 // ============================================
 // Saved Audiences (for targeting)
 // ============================================

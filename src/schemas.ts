@@ -995,6 +995,22 @@ export const TOOL_DEFINITIONS = [
       required: ['ad_account_id'],
     },
   },
+  {
+    name: 'meta_ads_create_custom_audience',
+    description: 'Create a custom audience for website visitor retargeting. Creates a WEBSITE subtype audience with optional URL rules and exclusion rules.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ad_account_id: { type: 'string', description: 'Ad Account ID' },
+        name: { type: 'string', description: 'Audience name' },
+        retention_days: { type: 'number', description: 'How many days to retain visitors (e.g. 180)' },
+        rule: { type: 'object', description: 'URL matching rule (e.g. {"url":{"operator":"i_contains","value":"product"}})' },
+        exclusion_rule: { type: 'object', description: 'Exclusion rule (e.g. exclude converted users)' },
+        description: { type: 'string', description: 'Audience description' },
+      },
+      required: ['ad_account_id', 'name'],
+    },
+  },
 ] as const;
 
 // Type exports

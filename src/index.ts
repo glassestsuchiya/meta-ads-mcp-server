@@ -773,6 +773,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'meta_ads_create_custom_audience': {
+        const { ad_account_id, name: audienceName, retention_days, rule, exclusion_rule, description } = args as {
+          ad_account_id: string;
+          name: string;
+          retention_days?: number;
+          rule?: Record<string, unknown>;
+          exclusion_rule?: Record<string, unknown>;
+          description?: string;
+        };
+
+        const params: Record<string, unknown> = {
+          name: audienceName,
+          subtype: 'WEBSITE',
+        };
+        if (retention_days !== undefined) {
+          params.retention_days = retention_days;
+        }
+        if (rule) {
+          params.rule = rule;
+        }
+        if (exclusion_rule) {
+          params.exclusion_rule = exclusion_rule;
+        }
+        if (description) {
+          params.description = description;
+        }
+
+        const result = await client.createCustomAudience(ad_account_id, params as {
+          name: string;
+          subtype: string;
+          retention_days?: number;
+          rule?: Record<string, unknown>;
+          exclusion_rule?: Record<string, unknown>;
+          description?: string;
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ success: true, custom_audience_id: result.id }, null, 2),
+            },
+          ],
+        };
+      }
+
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }
