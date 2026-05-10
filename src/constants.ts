@@ -264,3 +264,35 @@ export const RATE_LIMIT_WAIT = {
   LIGHT: 30000,        // 30 seconds
   HEAVY: 300000,       // 5 minutes
 };
+
+// READ_ONLY_MODE: env が "0" のときのみ write 解禁。それ以外（未設定 / "1" / 不明値）は全て read-only に倒す（fail closed）
+export const READ_ONLY_TOOLS: readonly string[] = [
+  'meta_ads_list_ad_accounts',
+  'meta_ads_get_ad_account',
+  'meta_ads_get_account_insights',
+  'meta_ads_get_instagram_accounts',
+  'meta_ads_list_campaigns',
+  'meta_ads_get_campaign',
+  'meta_ads_get_campaign_insights',
+  'meta_ads_list_adsets',
+  'meta_ads_get_adset',
+  'meta_ads_get_adset_insights',
+  'meta_ads_list_ads',
+  'meta_ads_get_ad',
+  'meta_ads_get_ad_insights',
+  'meta_ads_list_ad_creatives',
+  'meta_ads_get_ad_creative',
+  'meta_ads_analyze_ad_creative',
+  'meta_ads_get_activities',
+  'meta_ads_batch_get',
+  'meta_ads_get_async_report_status',
+  'meta_ads_fetch_next_page',
+] as const;
+
+export function isReadOnlyMode(): boolean {
+  return process.env.READ_ONLY_MODE !== '0';
+}
+
+export function isAllowedInReadOnly(toolName: string): boolean {
+  return READ_ONLY_TOOLS.includes(toolName);
+}

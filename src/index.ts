@@ -19,6 +19,7 @@ import geoip from 'geoip-lite';
 import rateLimit from 'express-rate-limit';
 
 import { TOOL_DEFINITIONS } from './schemas.js';
+import { isReadOnlyMode, isAllowedInReadOnly } from './constants.js';
 import * as client from './services/client.js';
 import * as formatter from './services/formatter.js';
 import type { ResponseFormat, DatePreset, Breakdown, Targeting } from './types.js';
@@ -38,12 +39,15 @@ const server = new Server(
 
 // Register tool list handler
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const readOnly = isReadOnlyMode();
   return {
-    tools: TOOL_DEFINITIONS.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    })),
+    tools: TOOL_DEFINITIONS
+      .filter((tool) => !readOnly || isAllowedInReadOnly(tool.name))
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
   };
 });
 
@@ -64,6 +68,12 @@ function handleError(error: unknown): never {
 // Register tool call handler
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+
+  // read-only mode guard (fail closed): payload/args/token/secret は出力しない
+  if (isReadOnlyMode() && !isAllowedInReadOnly(name)) {
+    console.log(`[READONLY_DENY] tool=${name} status=blocked request_id=${(request as any).id ?? 'unknown'}`);
+    throw new McpError(ErrorCode.MethodNotFound, `Tool blocked: read-only mode active (tool=${name})`);
+  }
 
   try {
     switch (name) {
