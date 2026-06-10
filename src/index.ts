@@ -925,7 +925,7 @@ async function runHTTP(): Promise<void> {
       return;
     }
     if (!apiToken || key !== apiToken) {
-      console.warn(JSON.stringify({ severity: 'WARNING', type: 'MCP_AUTH_FAIL', reason: 'invalid_key', ip: clientIp, apiKeyPrefix: key.substring(0, 8) + '...', timestamp: new Date().toISOString() }));
+      console.warn(JSON.stringify({ severity: 'WARNING', type: 'MCP_AUTH_FAIL', reason: 'invalid_key', ip: clientIp, timestamp: new Date().toISOString() }));
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
@@ -958,7 +958,6 @@ async function runHTTP(): Promise<void> {
       timestamp: new Date().toISOString(),
       ip: clientIp,
       country: geo?.country || 'unknown',
-      apiKeyPrefix: key ? key.substring(0, 8) + '...' : 'none',
       path: req.path,
       method: req.method,
       rpcMethod: req.body?.method || 'unknown'
